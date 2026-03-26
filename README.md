@@ -32,11 +32,9 @@ source .venv/bin/activate
 sudo apt update && sudo apt install -y python3 python3-pip python3-pygame python3-mutagen
 python3 -m pip install fastapi uvicorn "pydantic<2"
 
-# Add your MP3 files to media/
-cp /path/to/your/music/* media/
-
-# Start hub
-python3 -m uvicorn device_service.main:app --host 0.0.0.0 --port 8000
+# Choose hub media directory and start hub
+mkdir -p ~/Music
+./start_hub.sh ~/Music
 ```
 
 On controller device (Windows/Mac/Linux):
@@ -53,8 +51,12 @@ source .venv/bin/activate
 # Install deps
 python3 -m pip install fastapi uvicorn "pydantic<2"
 
-# Add same MP3 files
-cp /path/to/your/music/* media/
+# Put MP3 files in controller_media/ for upload sync to hub
+mkdir -p controller_media
+cp /path/to/your/music/*.mp3 controller_media/
+
+# Start folder sync uploader (recommended)
+./start_controller_sync.sh controller-1 http://<hub-ip>:8000 controller_media 3
 
 # Run one of:
 # Option A: browser controller (open http://<hub-ip>:8000/controller)
@@ -214,13 +216,62 @@ curl http://<hub-ip>:8000/v1/state
 If `base_version` is stale, API returns `conflict=true` with current canonical
 state.
 
+## Controller media folder sync (upload + delete)
+
+Fresh clone includes an empty folder:
+
+```text
+controller_media/
+```
+
+Use it on controller devices to mirror MP3 files into hub automatically.
+
+### Hub (Pi)
+
+Run hub with a dedicated media directory (recommended):
+
+```bash
+mkdir -p ~/Music
+cd ~/mp3_player
+./start_hub.sh ~/Music
+```
+
+### Controller device
+
+Start folder sync agent (one command):
+
+```bash
+cd ~/mp3_player
+./start_controller_sync.sh controller-1 http://<hub-ip>:8000 controller_media 3
+```
+
+Behavior:
+
+- add `.mp3` files into `controller_media/` → files upload to hub and appear in API queue/playlists
+- delete `.mp3` files from `controller_media/` → matching files are removed from hub automatically
+
+Where files go on hub:
+
+- hub media root: `~/Music` (or whatever path you pass to `./start_hub.sh <path>`)
+- controller uploads: `~/Music/controller_uploads/<device-id>/`
+
+API routes used by controller folder sync:
+
+- `POST /v1/library/upload` (multipart, supports `device_id`)
+- `POST /v1/library/reconcile` (remove files no longer present on controller)
+
 ## Playback API endpoints
 
 - `GET /v1/health`
 - `GET /v1/state`
 - `GET /v1/queue`
+- `GET /v1/library`
 - `GET /v1/playlists`
 - `POST /v1/playlists/use`
+- `POST /v1/playlists/create`
+- `POST /v1/playlists/delete`
+- `POST /v1/playlists/add-song`
+- `POST /v1/playlists/remove-song`
 - `POST /v1/playback/play`
 - `POST /v1/playback/pause`
 - `POST /v1/playback/stop`
@@ -233,6 +284,13 @@ state.
 - `POST /v1/playback/repeat/cycle`
 - `POST /v1/queue/select`
 - `POST /v1/queue/play`
+
+Web controller supports playlist management:
+
+- create playlist
+- delete playlist (except `All songs`)
+- add song to playlist
+- remove song from playlist
 
 ## Pi autostart with systemd
 
@@ -249,10 +307,10 @@ If your path differs, edit `WorkingDirectory` and `ExecStart` in the unit.
 
 ## Add new MP3 files
 
-- Copy files into the music folder on the playback device.
-- Restart/reload whichever runtime is using that folder (hub or local mode).
-- Playlist content comes from `playlists.json`; update it if you use curated
-  playlists.
+- Hub-local files: copy `.mp3` files into the hub media directory (`~/Music` if using `./start_hub.sh ~/Music`).
+- Controller uploads: copy `.mp3` files into `controller_media/` and keep `start_controller_sync.sh` running.
+- If files are added/removed manually on hub, restart hub to rescan the library.
+- Playlist content is stored in `playlists.json` and can also be managed from the web controller.
 
 ## Tests
 
