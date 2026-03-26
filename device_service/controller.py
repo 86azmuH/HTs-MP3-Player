@@ -22,6 +22,7 @@ class PlaybackController:
     _CHECKPOINT_INTERVAL_SECONDS = 5.0
 
     def __init__(self, music_directory: str):
+        self._music_directory = music_directory
         self._ctx: AppContext = build_context(music_directory)
         self._versions = VersionState()
         self._lock = Lock()
@@ -235,3 +236,16 @@ class PlaybackController:
             self._ctx.player.stop()
 
             self._mark_queue_changed()
+
+    def reload_library(self) -> int:
+        with self._lock:
+            try:
+                self._ctx.player.stop()
+            except Exception:
+                pass
+
+            audio_adapter = getattr(self._ctx.player, "_audio_adapter", None)
+            self._ctx = build_context(self._music_directory, audio_adapter=audio_adapter)
+            self._mark_queue_changed()
+            save_state(self._ctx)
+            return len(self._ctx.scanned_songs)

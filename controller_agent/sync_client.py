@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import uuid
+from pathlib import Path
 from typing import Any, Dict, Optional
 from urllib import error, parse, request
 
@@ -14,16 +16,27 @@ class SyncClient:
         self._base_url = base_url.rstrip("/")
         self._timeout_seconds = timeout_seconds
 
-    def _request(self, method: str, path: str, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        body = None
-        headers = {"Content-Type": "application/json"}
+    def _request(
+        self,
+        method: str,
+        path: str,
+        payload: Optional[Dict[str, Any]] = None,
+        raw_body: Optional[bytes] = None,
+        headers: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Any]:
+        if payload is not None and raw_body is not None:
+            raise ValueError("Provide either payload or raw_body, not both")
+
+        request_headers: Dict[str, str] = dict(headers or {})
+        body = raw_body
         if payload is not None:
             body = json.dumps(payload).encode("utf-8")
+            request_headers.setdefault("Content-Type", "application/json")
 
         req = request.Request(
             url=f"{self._base_url}{path}",
             data=body,
-            headers=headers,
+            headers=request_headers,
             method=method,
         )
 
@@ -52,3 +65,35 @@ class SyncClient:
         if base_version is not None:
             payload["base_version"] = int(base_version)
         return self._request("POST", "/v1/sync/push", payload=payload)
+
+    def upload_library_files(self, device_id: str, file_paths: list[Path]) -> Dict[str, Any]:
+        boundary = f"----mp3player{uuid.uuid4().hex}"
+        body_parts: list[bytes] = []
+
+        body_parts.append(f"--{boundary}\r\n".encode("utf-8"))
+        body_parts.append(b'Content-Disposition: form-data; name="device_id"\r\n\r\n')
+        body_parts.append(device_id.encode("utf-8"))
+        body_parts.append(b"\r\n")
+
+        for file_path in file_paths:
+            filename = file_path.name
+            file_bytes = file_path.read_bytes()
+            body_parts.append(f"--{boundary}\r\n".encode("utf-8"))
+            body_parts.append(
+                f'Content-Disposition: form-data; name="files"; filename="{filename}"\r\n'.encode("utf-8")
+            )
+            body_parts.append(b"Content-Type: audio/mpeg\r\n\r\n")
+            body_parts.append(file_bytes)
+            body_parts.append(b"\r\n")
+
+        body_parts.append(f"--{boundary}--\r\n".encode("utf-8"))
+        body = b"".join(body_parts)
+        headers = {"Content-Type": f"multipart/form-data; boundary={boundary}"}
+        return self._request("POST", "/v1/library/upload", raw_body=body, headers=headers)
+
+    def reconcile_library(self, device_id: str, filenames: list[str]) -> Dict[str, Any]:
+        return self._request(
+            "POST",
+            "/v1/library/reconcile",
+            payload={"device_id": device_id, "files": filenames},
+        )

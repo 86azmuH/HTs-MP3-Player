@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import argparse
+import re
+import shutil
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -12,8 +14,15 @@ from core.player import PlaybackState
 from device_service.controller import PlaybackController
 from device_service.models import (
     PlayQueueItemRequest,
+    LibraryReconcileRequest,
+    LibraryReconcileResponse,
     PlaybackActionResponse,
+    CreatePlaylistRequest,
+    DeletePlaylistRequest,
+    LibraryUploadResponse,
+    PlaylistActionResponse,
     PlaylistListResponse,
+    PlaylistSongRequest,
     QueueItem,
     QueueResponse,
     SeekRequest,
@@ -33,11 +42,17 @@ def _status_name(state: PlaybackState) -> str:
     return state.name.lower()
 
 
+def _sanitize_device_id(device_id: str) -> str:
+    cleaned = re.sub(r"[^a-zA-Z0-9._-]", "_", device_id.strip())
+    return cleaned[:100] or "device"
+
+
 def create_app(music_directory: str) -> FastAPI:
     app = FastAPI(title="MP3 Player Device Service", version="0.1.0")
     controller = PlaybackController(music_directory)
     sync_store = SyncStateStore()
     web_dir = Path(__file__).resolve().parent / "web"
+    media_dir = Path(music_directory)
 
     if web_dir.exists():
         app.mount("/controller/static", StaticFiles(directory=str(web_dir)), name="controller-static")
@@ -216,6 +231,16 @@ def create_app(music_directory: str) -> FastAPI:
             message=f"Playing queue index {req.index}",
         )
 
+    @app.get("/v1/library")
+    def get_library():
+        ctx = controller.context
+        return {
+            "songs": [
+                {"path": str(s.path), "title": s.title, "artist": s.artist}
+                for s in ctx.scanned_songs
+            ]
+        }
+
     @app.get("/v1/playlists", response_model=PlaylistListResponse)
     def get_playlists() -> PlaylistListResponse:
         ctx = controller.context
@@ -271,6 +296,158 @@ def create_app(music_directory: str) -> FastAPI:
             state_version=controller.versions.state_version,
             queue_version=controller.versions.queue_version,
             message=f"Switched to playlist '{req.name}'",
+        )
+
+    def _playlist_action_response(message: str) -> PlaylistActionResponse:
+        ctx = controller.context
+        return PlaylistActionResponse(
+            names=ctx.playlist_service.get_playlist_names(ctx.playlists_data),
+            current_playlist_name=ctx.current_playlist_name,
+            queue_version=controller.versions.queue_version,
+            message=message,
+        )
+
+    @app.post("/v1/playlists/create", response_model=PlaylistActionResponse)
+    def create_playlist(req: CreatePlaylistRequest) -> PlaylistActionResponse:
+        name = req.name.strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="Playlist name cannot be empty")
+        ctx = controller.context
+        with controller._lock:
+            if name in ctx.playlists_data:
+                raise HTTPException(status_code=409, detail=f"Playlist '{name}' already exists")
+            ctx.playlists_data[name] = []
+            ctx.playlist_service.save(ctx.playlists_data)
+        return _playlist_action_response(f"Created playlist '{name}'")
+
+    @app.post("/v1/playlists/delete", response_model=PlaylistActionResponse)
+    def delete_playlist(req: DeletePlaylistRequest) -> PlaylistActionResponse:
+        if req.name == "All songs":
+            raise HTTPException(status_code=400, detail="Cannot delete 'All songs'")
+        ctx = controller.context
+        with controller._lock:
+            if req.name not in ctx.playlists_data:
+                raise HTTPException(status_code=404, detail=f"Playlist '{req.name}' not found")
+            del ctx.playlists_data[req.name]
+            ctx.playlist_service.save(ctx.playlists_data)
+            if ctx.current_playlist_name == req.name:
+                from bootstrap import switch_playlist
+                switch_playlist(ctx, "All songs")
+        return _playlist_action_response(f"Deleted playlist '{req.name}'")
+
+    @app.post("/v1/playlists/add-song", response_model=PlaylistActionResponse)
+    def add_song_to_playlist(req: PlaylistSongRequest) -> PlaylistActionResponse:
+        ctx = controller.context
+        with controller._lock:
+            if req.playlist_name not in ctx.playlists_data:
+                raise HTTPException(status_code=404, detail=f"Playlist '{req.playlist_name}' not found")
+            if req.playlist_name == "All songs":
+                raise HTTPException(status_code=400, detail="Cannot manually edit 'All songs'")
+            if req.song_path not in ctx.playlists_data[req.playlist_name]:
+                ctx.playlists_data[req.playlist_name].append(req.song_path)
+                ctx.playlist_service.save(ctx.playlists_data)
+        return _playlist_action_response(f"Added song to '{req.playlist_name}'")
+
+    @app.post("/v1/playlists/remove-song", response_model=PlaylistActionResponse)
+    def remove_song_from_playlist(req: PlaylistSongRequest) -> PlaylistActionResponse:
+        ctx = controller.context
+        with controller._lock:
+            if req.playlist_name not in ctx.playlists_data:
+                raise HTTPException(status_code=404, detail=f"Playlist '{req.playlist_name}' not found")
+            if req.playlist_name == "All songs":
+                raise HTTPException(status_code=400, detail="Cannot manually edit 'All songs'")
+            tracks = ctx.playlists_data[req.playlist_name]
+            ctx.playlists_data[req.playlist_name] = [p for p in tracks if p != req.song_path]
+            ctx.playlist_service.save(ctx.playlists_data)
+        return _playlist_action_response(f"Removed song from '{req.playlist_name}'")
+
+    @app.post("/v1/library/upload", response_model=LibraryUploadResponse)
+    def upload_library(
+        files: list[UploadFile] = File(...),
+        device_id: str | None = Form(default=None),
+    ) -> LibraryUploadResponse:
+        target_dir = media_dir
+        if device_id:
+            safe_device_id = _sanitize_device_id(device_id)
+            target_dir = media_dir / "controller_uploads" / safe_device_id
+
+        target_dir.mkdir(parents=True, exist_ok=True)
+        saved_files: list[str] = []
+        skipped_files: list[str] = []
+
+        for upload in files:
+            raw_name = upload.filename or ""
+            safe_name = Path(raw_name).name
+            if not safe_name or not safe_name.lower().endswith(".mp3"):
+                skipped_files.append(raw_name or "(unnamed)")
+                continue
+
+            target = target_dir / safe_name
+            base_stem = target.stem
+            suffix = target.suffix
+            sequence = 1
+            while target.exists():
+                target = target_dir / f"{base_stem}_{sequence}{suffix}"
+                sequence += 1
+
+            with target.open("wb") as out_file:
+                shutil.copyfileobj(upload.file, out_file)
+            saved_files.append(target.name)
+
+        if saved_files:
+            controller.reload_library()
+
+        message = (
+            f"Uploaded {len(saved_files)} file(s)"
+            if saved_files
+            else "No MP3 files uploaded"
+        )
+        if skipped_files:
+            message = f"{message}; skipped {len(skipped_files)} non-mp3 file(s)"
+
+        return LibraryUploadResponse(
+            uploaded_count=len(saved_files),
+            saved_files=saved_files,
+            skipped_files=skipped_files,
+            state_version=controller.versions.state_version,
+            queue_version=controller.versions.queue_version,
+            message=message,
+        )
+
+    @app.post("/v1/library/reconcile", response_model=LibraryReconcileResponse)
+    def reconcile_library(req: LibraryReconcileRequest) -> LibraryReconcileResponse:
+        safe_device_id = _sanitize_device_id(req.device_id)
+        device_dir = media_dir / "controller_uploads" / safe_device_id
+        if not device_dir.exists():
+            device_dir.mkdir(parents=True, exist_ok=True)
+
+        desired = {
+            Path(name).name
+            for name in req.files
+            if name and Path(name).name.lower().endswith(".mp3")
+        }
+
+        removed_files: list[str] = []
+        for existing in device_dir.glob("*.mp3"):
+            if existing.name not in desired:
+                existing.unlink(missing_ok=True)
+                removed_files.append(existing.name)
+
+        if removed_files:
+            controller.reload_library()
+
+        message = (
+            f"Removed {len(removed_files)} file(s)"
+            if removed_files
+            else "No files removed"
+        )
+
+        return LibraryReconcileResponse(
+            removed_count=len(removed_files),
+            removed_files=removed_files,
+            state_version=controller.versions.state_version,
+            queue_version=controller.versions.queue_version,
+            message=message,
         )
 
     return app

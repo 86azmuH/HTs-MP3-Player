@@ -40,3 +40,5 @@ exports/**/__pycache__/
 
 # Local media content
 media/*.mp3
+controller_media/*.mp3
+controller_media/**/*.mp3

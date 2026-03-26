@@ -55,6 +55,51 @@ class PlaylistListResponse(BaseModel):
     queue_version: int
 
 
+class PlaylistActionResponse(BaseModel):
+    ok: bool = True
+    names: List[str]
+    current_playlist_name: str
+    queue_version: int
+    message: str
+
+
+class CreatePlaylistRequest(BaseModel):
+    name: str = Field(min_length=1)
+
+
+class DeletePlaylistRequest(BaseModel):
+    name: str
+
+
+class PlaylistSongRequest(BaseModel):
+    playlist_name: str
+    song_path: str
+
+
+class LibraryUploadResponse(BaseModel):
+    ok: bool = True
+    uploaded_count: int
+    saved_files: List[str]
+    skipped_files: List[str]
+    state_version: int
+    queue_version: int
+    message: str
+
+
+class LibraryReconcileRequest(BaseModel):
+    device_id: str = Field(min_length=1)
+    files: List[str] = Field(default_factory=list)
+
+
+class LibraryReconcileResponse(BaseModel):
+    ok: bool = True
+    removed_count: int
+    removed_files: List[str]
+    state_version: int
+    queue_version: int
+    message: str
+
+
 class StateResponse(BaseModel):
     status: str
     current_song_title: Optional[str] = None

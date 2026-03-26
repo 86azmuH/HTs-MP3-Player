@@ -102,18 +102,35 @@
     <div class="panel">
         <h3>Playlists</h3>
         <div id="playlists" class="row"></div>
+        <div class="row" style="margin-top:10px;align-items:center;gap:6px;">
+            <input id="newPlaylistName" type="text" placeholder="New playlist name..."
+                style="padding:6px;flex:1;max-width:240px;" />
+            <button onclick="createPlaylist()">Create</button>
+            <button id="deletePlaylistBtn" onclick="deleteCurrentPlaylist()" style="margin-left:16px;color:#b00020;"
+                disabled>Delete playlist</button>
+        </div>
     </div>
 
     <div class="panel">
         <h3>Queue</h3>
         <ul id="queue"></ul>
+        <div id="addSongSection" style="display:none;margin-top:10px;border-top:1px solid #eee;padding-top:10px;">
+            <strong>Add song to this playlist:</strong>
+            <div class="row" style="align-items:center;gap:6px;margin-top:6px;">
+                <select id="addSongSelect" style="flex:1;max-width:400px;padding:6px;"></select>
+                <button onclick="addSelectedSong()">Add</button>
+            </div>
+        </div>
     </div>
 
     <script>
         async function fetchJson(url, options = {}) {
             const res = await fetch(url, {
-                headers: { 'Content-Type': 'application/json' },
                 ...options,
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...(options.headers || {}),
+                },
             });
             let data = null;
             const contentType = res.headers.get('content-type') || '';
@@ -222,12 +239,19 @@
             }
         }
 
+        // Playlist state shared across refresh functions
+        let _currentPlaylistName = 'All songs';
+        let _allPlaylistNames = [];
+        let _allLibrarySongs = [];
+
         async function refreshPlaylists() {
             try {
                 const data = await fetchJson('/v1/playlists');
+                _currentPlaylistName = data.current_playlist_name;
+                _allPlaylistNames = data.names;
+
                 const container = document.getElementById('playlists');
                 container.innerHTML = '';
-
                 data.names.forEach(name => {
                     const btn = document.createElement('button');
                     btn.textContent = name;
@@ -238,8 +262,97 @@
                     btn.onclick = () => usePlaylist(name);
                     container.appendChild(btn);
                 });
+
+                const deleteBtn = document.getElementById('deletePlaylistBtn');
+                const isAllSongs = data.current_playlist_name === 'All songs';
+                deleteBtn.disabled = isAllSongs;
+                deleteBtn.textContent = isAllSongs
+                    ? 'Delete playlist'
+                    : `Delete "${data.current_playlist_name}"`;
             } catch (err) {
                 showStatus(`Playlists error: ${err.message}`, true);
+            }
+        }
+
+        async function refreshLibrary() {
+            try {
+                const data = await fetchJson('/v1/library');
+                _allLibrarySongs = data.songs;
+                _repopulateAddSongSelect();
+            } catch (err) {
+                // non-fatal
+            }
+        }
+
+        function _repopulateAddSongSelect() {
+            const sel = document.getElementById('addSongSelect');
+            sel.innerHTML = '';
+            _allLibrarySongs.forEach(song => {
+                const opt = document.createElement('option');
+                opt.value = song.path;
+                opt.textContent = song.artist ? `${song.title} — ${song.artist}` : song.title;
+                sel.appendChild(opt);
+            });
+        }
+
+        async function createPlaylist() {
+            const input = document.getElementById('newPlaylistName');
+            const name = input.value.trim();
+            if (!name) { showStatus('Enter a playlist name', true); return; }
+            try {
+                const data = await fetchJson('/v1/playlists/create', {
+                    method: 'POST',
+                    body: JSON.stringify({ name }),
+                });
+                showStatus(data.message || `Created "${name}"`);
+                input.value = '';
+                await refreshAll();
+            } catch (err) {
+                showStatus(err.payload?.detail || err.message, true);
+            }
+        }
+
+        async function deleteCurrentPlaylist() {
+            if (_currentPlaylistName === 'All songs') return;
+            if (!confirm(`Delete playlist "${_currentPlaylistName}"?`)) return;
+            try {
+                const data = await fetchJson('/v1/playlists/delete', {
+                    method: 'POST',
+                    body: JSON.stringify({ name: _currentPlaylistName }),
+                });
+                showStatus(data.message || `Deleted "${_currentPlaylistName}"`);
+                await refreshAll();
+            } catch (err) {
+                showStatus(err.payload?.detail || err.message, true);
+            }
+        }
+
+        async function removeSongFromPlaylist(songPath) {
+            try {
+                const data = await fetchJson('/v1/playlists/remove-song', {
+                    method: 'POST',
+                    body: JSON.stringify({ playlist_name: _currentPlaylistName, song_path: songPath }),
+                });
+                showStatus(data.message || 'Removed');
+                await refreshAll();
+            } catch (err) {
+                showStatus(err.payload?.detail || err.message, true);
+            }
+        }
+
+        async function addSelectedSong() {
+            const sel = document.getElementById('addSongSelect');
+            const songPath = sel.value;
+            if (!songPath) return;
+            try {
+                const data = await fetchJson('/v1/playlists/add-song', {
+                    method: 'POST',
+                    body: JSON.stringify({ playlist_name: _currentPlaylistName, song_path: songPath }),
+                });
+                showStatus(data.message || 'Added');
+                await refreshAll();
+            } catch (err) {
+                showStatus(err.payload?.detail || err.message, true);
             }
         }
 
@@ -276,6 +389,9 @@
             const list = document.getElementById('queue');
             list.innerHTML = '';
 
+            const isCustomPlaylist = queue.playlist_name !== 'All songs';
+            document.getElementById('addSongSection').style.display = isCustomPlaylist ? 'block' : 'none';
+
             queue.items.forEach(item => {
                 const li = document.createElement('li');
                 li.className = item.is_current ? 'current' : '';
@@ -296,6 +412,16 @@
                 li.appendChild(title);
                 li.appendChild(selectBtn);
                 li.appendChild(playBtn);
+
+                if (isCustomPlaylist) {
+                    const removeBtn = document.createElement('button');
+                    removeBtn.textContent = 'Remove';
+                    removeBtn.style.marginLeft = '6px';
+                    removeBtn.style.color = '#b00020';
+                    removeBtn.onclick = () => removeSongFromPlaylist(item.path);
+                    li.appendChild(removeBtn);
+                }
+
                 list.appendChild(li);
             });
         }
@@ -309,7 +435,9 @@
         }
 
         refreshAll();
+        refreshLibrary();
         setInterval(refreshAll, 100);
+        setInterval(refreshLibrary, 10000);
     </script>
 </body>
 
