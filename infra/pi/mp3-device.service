@@ -1,0 +1,17 @@
+[Unit]
+Description=MP3 Player Device Service
+After=network.target sound.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+WorkingDirectory=/home/pi/mp3_player
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 -m uvicorn device_service.main:app --host 0.0.0.0 --port 8000
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

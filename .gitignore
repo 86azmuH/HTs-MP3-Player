@@ -1,0 +1,42 @@
+# Python caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Build / packaging artifacts
+build/
+dist/
+*.spec
+*.egg-info/
+
+# Test and tool caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+.vscode/
+
+# Local runtime data
+settings.json
+device_state.db
+controller_state.db
+
+# Exported/released bundles
+exports/
+exports/**/build/
+exports/**/release/
+exports/**/__pycache__/
+
+# Local media content
+media/*.mp3
