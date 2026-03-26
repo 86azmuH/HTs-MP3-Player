@@ -8,6 +8,13 @@ This repository contains the full project in one place:
 
 ## First-time setup (copy-paste checklist)
 
+### Python environment note (important)
+
+- Global installs (`python3 -m pip install ...`) can work on some machines.
+- On Debian/Raspberry Pi, global installs are often restricted; use a virtual environment for reliable setup.
+- `venv` folders are local machine artifacts and should never be committed to git.
+- This repo already ignores them (`venv/`, `.venv/`, `env/`).
+
 ### Full system setup (hub on Pi, browser/agent controllers elsewhere)
 
 On Pi (hub device):
@@ -16,6 +23,10 @@ On Pi (hub device):
 # Clone repo
 git clone <your-repo-url> ~/mp3_player
 cd ~/mp3_player
+
+# Create and activate venv (recommended)
+python3 -m venv .venv
+source .venv/bin/activate
 
 # Install deps
 sudo apt update && sudo apt install -y python3 python3-pip python3-pygame python3-mutagen
@@ -34,6 +45,10 @@ On controller device (Windows/Mac/Linux):
 # Clone repo
 git clone <your-repo-url> ~/mp3_player
 cd ~/mp3_player
+
+# Create and activate venv (recommended)
+python3 -m venv .venv
+source .venv/bin/activate
 
 # Install deps
 python3 -m pip install fastapi uvicorn "pydantic<2"
